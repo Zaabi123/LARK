@@ -14,15 +14,23 @@ connects to Lark itself, so you don't need a public URL or a tunnel.
 ## Project layout
 
 ```
-src/
-  agent/existing-agent.js          AI agent and pricing rules
-  integrations/lark/
-    lark.service.js                Lark API (official SDK), customer list
-    lark.controller.js             inbound replies, outbound send, STOP/START
-    lark.routes.js                 HTTP routes and auth
-  server.js                        config, long connection, startup
-send.js                            command-line sender
+backend/                           Node server: deploy to Railway
+  src/
+    agent/existing-agent.js        AI agent and pricing rules
+    integrations/lark/
+      lark.service.js              Lark API (official SDK), customer list
+      lark.controller.js           inbound replies, outbound send, STOP/START
+      lark.routes.js               HTTP routes and auth
+    server.js                      config, CORS, long connection, startup
+  send.js                          command-line sender
+  railway.json                     Railway build/start/health check
+frontend/                          static dashboard: deploy to Vercel
+  index.html                       customer list + send a message
+  build.mjs                        writes dist/ and config.js (API_URL)
+  vercel.json
 ```
+
+Run the commands below inside `backend/` unless a step says otherwise.
 
 ## 1. Set up Lark
 
@@ -50,12 +58,40 @@ send.js                            command-line sender
 ## 2. Run it
 
 ```powershell
+cd backend
 npm install
 npm start
 ```
 
 In the Lark app, search for your bot's name and send it a message. The agent
 replies.
+
+Dashboard locally: `cd frontend`, then `npm run dev`, and open http://localhost:5310.
+Add `CORS_ORIGINS=http://localhost:5310` to `backend/.env`.
+
+## Deploy: backend on Railway, dashboard on Vercel
+
+Run only **one** copy of the backend. Lark sends each message to one open long
+connection, so stop the local server once Railway is running.
+
+**Backend (Railway)**
+1. Railway → **New Project → Deploy from GitHub repo** → pick this repo.
+2. Service → **Settings → Root Directory** = `backend`. `railway.json` sets the
+   start command and the `/health` check.
+3. **Variables:** copy every value from `backend/.env` (`LARK_APP_ID`,
+   `LARK_APP_SECRET`, `LARK_DOMAIN`, `AGENT_API_KEY`, `MODEL_API_KEY`, the
+   price settings), plus `CORS_ORIGINS` = your Vercel URL. Don't set `HOST` or
+   `PORT`; Railway handles them.
+4. **Keep customers across deploys:** add a **Volume** mounted at `/data` and
+   set `DATA_DIR=/data`. Without it, `customers.json` (including STOP
+   opt-outs) is reset on every deploy.
+5. **Settings → Networking → Generate Domain** gives your backend URL.
+
+**Dashboard (Vercel)**
+1. Vercel → **Add New → Project** → import this repo → **Root Directory** = `frontend`.
+2. **Environment Variables:** `API_URL` = the Railway URL. Deploy.
+3. Put the Vercel URL into Railway's `CORS_ORIGINS`.
+4. Open the Vercel URL, paste your `AGENT_API_KEY`, and click **Connect**.
 
 ## 3. Send a message to a customer
 

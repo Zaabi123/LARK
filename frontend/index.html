@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Lark Agent Dashboard</title>
+  <link rel="icon" href="data:," />
+  <style>
+    :root {
+      --bg: #f4f6fb; --panel: #fff; --text: #18202f; --muted: #667085; --line: #e3e7ef;
+      --brand: #3370ff; --brand-soft: #e8efff; --ok: #12805c; --ok-soft: #e3f5ed; --bad: #c4320a; --bad-soft: #fdece6;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #0e121a; --panel: #171c27; --text: #e8edf6; --muted: #93a0b7; --line: #283143;
+        --brand: #5b8cff; --brand-soft: #1b2a4d; --ok: #4cc497; --ok-soft: #12332a; --bad: #ff8a65; --bad-soft: #3a1d14; }
+    }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    header { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; padding: 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+    h1 { font-size: 18px; margin: 0; }
+    .pill { font-size: 12px; padding: 2px 10px; border-radius: 99px; background: var(--brand-soft); color: var(--brand); }
+    .pill.ok { background: var(--ok-soft); color: var(--ok); }
+    .pill.bad { background: var(--bad-soft); color: var(--bad); }
+    main { max-width: 1080px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
+    @media (min-width: 900px) { main { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); } #connect { grid-column: 1 / -1; } }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; min-width: 0; }
+    h2 { font-size: 15px; margin: 0 0 12px; }
+    label { display: block; font-size: 13px; color: var(--muted); margin: 0 0 4px; }
+    input, textarea { width: 100%; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; }
+    textarea { min-height: 110px; resize: vertical; }
+    .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+    .row > div { flex: 1 1 220px; }
+    button { padding: 9px 16px; border: 0; border-radius: 8px; background: var(--brand); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+    button.ghost { background: transparent; color: var(--brand); border: 1px solid var(--line); }
+    button:disabled { opacity: .55; cursor: default; }
+    .muted { color: var(--muted); font-size: 13px; }
+    .msg { margin-top: 10px; font-size: 13px; padding: 8px 10px; border-radius: 8px; }
+    .msg.ok { background: var(--ok-soft); color: var(--ok); }
+    .msg.bad { background: var(--bad-soft); color: var(--bad); }
+    .table { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+    th { color: var(--muted); font-weight: 500; }
+    td.key { font-family: ui-monospace, Consolas, monospace; max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+    tr.pick { cursor: pointer; }
+    tr.pick:hover td { background: var(--brand-soft); }
+    .field { margin-bottom: 12px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Lark AI Agent</h1>
+    <span class="pill" id="status">Not connected</span>
+    <span class="muted" id="bot"></span>
+  </header>
+
+  <main>
+    <section class="card" id="connect">
+      <h2>Connect to the backend</h2>
+      <div class="row">
+        <div>
+          <label for="apiUrl">Backend URL (Railway)</label>
+          <input id="apiUrl" placeholder="https://your-app.up.railway.app" autocomplete="url" />
+        </div>
+        <div>
+          <label for="apiKey">Agent key (AGENT_API_KEY)</label>
+          <input id="apiKey" type="password" placeholder="Kept in this browser tab only" autocomplete="current-password" />
+        </div>
+        <button id="connectBtn">Connect</button>
+      </div>
+      <div id="connectMsg"></div>
+    </section>
+
+    <section class="card">
+      <div class="row" style="justify-content: space-between; align-items: center; margin-bottom: 8px;">
+        <h2 style="margin: 0;">Customers <span class="muted" id="count"></span></h2>
+        <button class="ghost" id="refreshBtn" disabled>Refresh</button>
+      </div>
+      <p class="muted" style="margin-top: 0;">Everyone who has messaged the bot. Click a row to message them.</p>
+      <div class="table">
+        <table>
+          <thead><tr><th>Customer</th><th>Name</th><th>Last seen</th><th>Status</th></tr></thead>
+          <tbody id="customers"><tr><td colspan="4" class="muted">Connect to load customers.</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Send a message</h2>
+      <div class="field">
+        <label for="to">To</label>
+        <input id="to" placeholder="user:ou_… · chat:oc_… · email:name@company.com" />
+      </div>
+      <div class="field">
+        <label for="text">Message</label>
+        <textarea id="text" maxlength="4000" placeholder="Hi! Our leather wallets are ₹250 per piece, with bulk pricing from 500 pieces."></textarea>
+      </div>
+      <button id="sendBtn" disabled>Send</button>
+      <div id="sendMsg"></div>
+    </section>
+  </main>
+
+<script src="config.js"></script>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const store = {
+    get: (k) => { try { return sessionStorage.getItem(k) || ""; } catch { return ""; } },
+    set: (k, v) => { try { sessionStorage.setItem(k, v); } catch {} },
+  };
+  const defaultApi = String(window.APP_CONFIG?.apiUrl || "").replace(/\/+$/, "");
+  $("apiUrl").value = store.get("larkApiUrl") || defaultApi;
+  $("apiKey").value = store.get("larkApiKey");
+
+  const base = () => $("apiUrl").value.trim().replace(/\/+$/, "");
+  function note(el, text, ok) {
+    $(el).innerHTML = "";
+    if (!text) return;
+    const d = document.createElement("div");
+    d.className = "msg " + (ok ? "ok" : "bad");
+    d.textContent = text;
+    $(el).append(d);
+  }
+  function setStatus(text, cls) { $("status").textContent = text; $("status").className = "pill " + (cls || ""); }
+
+  async function api(path, opts = {}) {
+    let res;
+    try {
+      res = await fetch(base() + path, {
+        ...opts,
+        headers: { Authorization: `Bearer ${$("apiKey").value.trim()}`, ...(opts.body ? { "Content-Type": "application/json" } : {}) },
+      });
+    } catch {
+      throw new Error(`Can't reach ${base()}. Check the URL, and that CORS_ORIGINS on Railway includes ${location.origin}.`);
+    }
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+    return body;
+  }
+
+  const when = (iso) => (iso ? new Date(iso).toLocaleString() : "");
+  async function loadCustomers() {
+    const data = await api("/lark/customers");
+    const rows = Object.entries(data).sort((a, b) => String(b[1].lastSeen).localeCompare(String(a[1].lastSeen)));
+    $("count").textContent = `(${rows.length})`;
+    const tbody = $("customers");
+    tbody.innerHTML = "";
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="4" class="muted">No customers yet. Message the bot in Lark to appear here.</td></tr>';
+      return;
+    }
+    for (const [key, c] of rows) {
+      const tr = document.createElement("tr");
+      tr.className = "pick";
+      const cells = [key, c.name || "", when(c.lastSeen), c.optedOut ? "Opted out (STOP)" : "Active"];
+      cells.forEach((v, i) => { const td = document.createElement("td"); td.textContent = v; if (i === 0) { td.className = "key"; td.title = key; } tr.append(td); });
+      tr.onclick = () => { $("to").value = key; $("text").focus(); };
+      tbody.append(tr);
+    }
+  }
+
+  async function connect() {
+    note("connectMsg", "");
+    $("connectBtn").disabled = true;
+    try {
+      if (!base()) throw new Error("Enter the backend URL.");
+      const info = await fetch(base() + "/").then((r) => r.json()).catch(() => { throw new Error(`Can't reach ${base()}. Check the URL, and that CORS_ORIGINS on Railway includes ${location.origin}.`); });
+      $("bot").textContent = info.bot ? `bot "${info.bot}" on ${info.platform}` : "";
+      await loadCustomers();
+      store.set("larkApiUrl", base());
+      store.set("larkApiKey", $("apiKey").value.trim());
+      setStatus("Connected", "ok");
+      $("refreshBtn").disabled = false;
+      $("sendBtn").disabled = false;
+    } catch (e) {
+      setStatus("Not connected", "bad");
+      note("connectMsg", e.message, false);
+    } finally {
+      $("connectBtn").disabled = false;
+    }
+  }
+
+  $("connectBtn").onclick = connect;
+  $("refreshBtn").onclick = () => loadCustomers().catch((e) => note("connectMsg", e.message, false));
+  $("sendBtn").onclick = async () => {
+    note("sendMsg", "");
+    $("sendBtn").disabled = true;
+    try {
+      const r = await api("/lark/send", { method: "POST", body: JSON.stringify({ to: $("to").value.trim(), text: $("text").value.trim() }) });
+      note("sendMsg", `Sent to ${r.to} (message ${r.id}).`, true);
+      $("text").value = "";
+      loadCustomers().catch(() => {});
+    } catch (e) {
+      note("sendMsg", e.message, false);
+    } finally {
+      $("sendBtn").disabled = false;
+    }
+  };
+  if ($("apiUrl").value && $("apiKey").value) connect();
+</script>
+</body>
+</html>

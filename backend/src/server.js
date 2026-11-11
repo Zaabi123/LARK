@@ -1,6 +1,7 @@
 import "dotenv/config";
 import express from "express";
 import * as Lark from "@larksuiteoapi/node-sdk";
+import { pathToFileURL } from "node:url";
 import { createLarkService } from "./integrations/lark/lark.service.js";
 import { createLarkController } from "./integrations/lark/lark.controller.js";
 import { createLarkRoutes } from "./integrations/lark/lark.routes.js";
@@ -10,12 +11,18 @@ const DOMAINS = { lark: "https://open.larksuite.com", feishu: "https://open.feis
 const domainName = (process.env.LARK_DOMAIN || "lark").toLowerCase();
 
 const config = {
-  host: process.env.HOST || "127.0.0.1",
+  // Railway (and similar hosts) route traffic to 0.0.0.0; locally stay on 127.0.0.1.
+  host: process.env.HOST || (process.env.RAILWAY_ENVIRONMENT ? "0.0.0.0" : "127.0.0.1"),
   port: Number(process.env.PORT || 3007),
   appId: process.env.LARK_APP_ID,
   appSecret: process.env.LARK_APP_SECRET,
   domain: DOMAINS[domainName],
   agentApiKey: process.env.AGENT_API_KEY,
+  // Origins allowed to call the API from a browser, e.g. the Vercel dashboard (comma-separated).
+  corsOrigins: (process.env.CORS_ORIGINS || "")
+    .split(",")
+    .map((o) => o.trim().replace(/\/+$/, ""))
+    .filter(Boolean),
 };
 
 const agentConfig = {
@@ -55,7 +62,11 @@ if (
 }
 
 // ---- Wire up -----------------------------------------------------------------
-const lark = createLarkService({ ...config, dataDir: new URL("../data/", import.meta.url) });
+// DATA_DIR lets the customer list live on a persistent disk (e.g. a Railway volume mounted at /data).
+const dataDir = process.env.DATA_DIR
+  ? pathToFileURL(process.env.DATA_DIR.replace(/[\\/]*$/, "/"))
+  : new URL("../data/", import.meta.url);
+const lark = createLarkService({ ...config, dataDir });
 const controller = createLarkController({ lark, agentConfig });
 
 let botName;
@@ -71,6 +82,25 @@ if (botName) start();
 function start() {
   const app = express();
   app.disable("x-powered-by");
+  app.set("trust proxy", 1);
+
+  // CORS for the Vercel dashboard. Only origins listed in CORS_ORIGINS are allowed.
+  app.use((req, res, next) => {
+    const origin = req.get("origin");
+    const allowed = origin && config.corsOrigins.includes(origin);
+    if (allowed) {
+      res.set({
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Headers": "Authorization, Content-Type",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Max-Age": "600",
+        Vary: "Origin",
+      });
+    }
+    if (req.method === "OPTIONS") return res.sendStatus(allowed ? 204 : 403);
+    next();
+  });
+
   app.get("/", (req, res) =>
     res.json({
       ok: true,
