@@ -103,6 +103,40 @@
 
 <script src="config.js"></script>
 <script>
+  // Better Stack browser logs: console output and uncaught errors from this page.
+  // On only when the build had BETTERSTACK_SOURCE_TOKEN + BETTERSTACK_HOST (Vercel environment variables).
+  (function () {
+    const cfg = window.APP_CONFIG && window.APP_CONFIG.logtail;
+    if (!cfg) return;
+    const queue = [];
+    let logtail = null;
+    const text = (a) => (a instanceof Error ? a.stack || a.message : typeof a === "string" ? a : (() => { try { return JSON.stringify(a); } catch { return String(a); } })());
+    const send = (level, msg, ctx) => {
+      const extra = { page: location.pathname, ...(ctx || {}) };
+      if (logtail) logtail[level](msg, extra).catch(() => {});
+      else if (queue.length < 200) queue.push([level, msg, extra]);
+    };
+    for (const [method, level] of [["log", "info"], ["info", "info"], ["warn", "warn"], ["error", "error"]]) {
+      const original = console[method].bind(console);
+      console[method] = (...args) => { original(...args); send(level, args.map(text).join(" ")); };
+    }
+    window.addEventListener("error", (e) => send("error", e.error ? text(e.error) : String(e.message), { source: e.filename, line: e.lineno }));
+    window.addEventListener("unhandledrejection", (e) => send("error", "Unhandled promise rejection: " + text(e.reason)));
+    window.addEventListener("pagehide", () => logtail && logtail.flush());
+
+    const s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/@logtail/browser@0.6.1/dist/umd/logtail.js";
+    s.integrity = "sha384-zd9LM6WQ4LwV81BROpeCy8DjsLXXnch/OsH+UcLNhFtKiNNR61sg9TYQSAgyiP+3";
+    s.crossOrigin = "anonymous";
+    s.onload = () => {
+      logtail = new window.Logtail(cfg.token, { endpoint: cfg.endpoint });
+      for (const [level, msg, extra] of queue.splice(0)) logtail[level](msg, extra).catch(() => {});
+      console.info("Dashboard opened");
+    };
+    document.head.append(s);
+  })();
+</script>
+<script>
   const $ = (id) => document.getElementById(id);
   const store = {
     get: (k) => { try { return sessionStorage.getItem(k) || ""; } catch { return ""; } },
@@ -170,11 +204,13 @@
       store.set("larkApiUrl", base());
       store.set("larkApiKey", $("apiKey").value.trim());
       setStatus("Connected", "ok");
+      console.info(`Connected to backend ${base()} (${$("count").textContent.replace(/[()]/g, "")} customers)`);
       $("refreshBtn").disabled = false;
       $("sendBtn").disabled = false;
     } catch (e) {
       setStatus("Not connected", "bad");
       note("connectMsg", e.message, false);
+      console.warn(`Connect failed: ${e.message}`);
     } finally {
       $("connectBtn").disabled = false;
     }
@@ -188,10 +224,12 @@
     try {
       const r = await api("/lark/send", { method: "POST", body: JSON.stringify({ to: $("to").value.trim(), text: $("text").value.trim() }) });
       note("sendMsg", `Sent to ${r.to} (message ${r.id}).`, true);
+      console.info(`Message sent to ${r.to} (${r.id})`);
       $("text").value = "";
       loadCustomers().catch(() => {});
     } catch (e) {
       note("sendMsg", e.message, false);
+      console.error(`Send failed: ${e.message}`);
     } finally {
       $("sendBtn").disabled = false;
     }

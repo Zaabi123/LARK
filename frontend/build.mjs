@@ -19,5 +19,12 @@ if (!apiUrl) console.warn("API_URL is not set: the dashboard will ask for the ba
 await rm("dist", { recursive: true, force: true });
 await mkdir("dist");
 await copyFile("index.html", "dist/index.html");
-await writeFile("dist/config.js", `window.APP_CONFIG = ${JSON.stringify({ apiUrl })};\n`);
-console.log(`Built dist/ (API_URL=${apiUrl || "not set"})`);
+// Better Stack browser logs (optional). The source token can only send logs, so it's safe in the page.
+const logtailToken = (process.env.BETTERSTACK_SOURCE_TOKEN || "").trim();
+const logtailHost = (process.env.BETTERSTACK_HOST || "").trim().replace(/\/+$/, "");
+const logtail = logtailToken && logtailHost
+  ? { token: logtailToken, endpoint: /^https?:\/\//.test(logtailHost) ? logtailHost : `https://${logtailHost}` }
+  : null;
+
+await writeFile("dist/config.js", `window.APP_CONFIG = ${JSON.stringify({ apiUrl, logtail })};\n`);
+console.log(`Built dist/ (API_URL=${apiUrl || "not set"}, Better Stack logs: ${logtail ? "on" : "off"})`);
