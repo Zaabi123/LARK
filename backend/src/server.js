@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { setupErrorMonitoring } from "./monitoring.js"; // Better Stack: loads right after .env, before anything logs
 import express from "express";
 import * as Lark from "@larksuiteoapi/node-sdk";
 import { pathToFileURL } from "node:url";
@@ -113,6 +114,7 @@ function start() {
   app.get("/health", (req, res) => res.json({ ok: true }));
   app.use("/lark", createLarkRoutes({ controller, agentApiKey: config.agentApiKey }));
   app.use((req, res) => res.status(404).json({ error: "Not found." }));
+  setupErrorMonitoring(app); // reports route errors to Better Stack Errors, then passes them on
   app.use((error, req, res, next) => {
     res.status(error.status || 500).json({ error: error.expose ? error.message : "Server error." });
   });
