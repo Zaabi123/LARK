@@ -4,3 +4,11 @@ node_modules/
 data/
 frontend/dist/
 .vercel
+
+.vercel
+.env*
+!.env.example
+.venv/
+__pycache__/
+*.pyc
+celerybeat-schedule*

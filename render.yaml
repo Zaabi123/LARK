@@ -1,45 +1,14 @@
 # Render Blueprint: Render → New → Blueprint → pick this repo.
-# Creates the backend (web service) and the dashboard (static site).
+#   lark-redis      Redis (Key Value): Celery broker, customers, conversation cache, reminders
+#   lark-backend    API (FastAPI) + Lark long connection          python -m app.main
+#   lark-celery     Celery worker with Beat built in (reminders)  celery ... worker -B
+#   lark-flower     Flower: web page to watch Celery tasks        (free plan)
+#   lark-dashboard  static dashboard (optional; you can host it on Cloudflare Pages instead)
 # Values marked "sync: false" are asked for once when you create the Blueprint.
-services:
-  # ---- Redis (Render Key Value): conversation cache + BullMQ reminder queue ----
-  - type: keyvalue
-    name: lark-redis
-    # Starter or higher: the free plan keeps no data on disk, so scheduled reminders
-    # would be lost whenever it restarts.
-    plan: starter
-    region: singapore # must match the backend's region
-    maxmemoryPolicy: noeviction # required by BullMQ (jobs must never be evicted)
-    ipAllowList: [] # only reachable from your Render services
 
-  # ---- Backend: Node server with the Lark long connection ----
-  - type: web
-    name: lark-backend
-    runtime: node
-    rootDir: backend
-    # Starter or higher: free instances sleep after 15 min without HTTP traffic,
-    # which drops the Lark long connection so the bot stops answering.
-    # Paid plans also allow the persistent disk below.
-    plan: starter
-    region: singapore
-    numInstances: 1 # only ONE copy may hold the Lark long connection
-    buildCommand: npm ci
-    startCommand: npm start
-    healthCheckPath: /health
-    disk:
-      name: lark-data
-      mountPath: /data
-      sizeGB: 1
+envVarGroups:
+  - name: lark-shared
     envVars:
-      - key: NODE_VERSION
-        value: "22"
-      - key: DATA_DIR
-        value: /data
-      - key: REDIS_URL
-        fromService:
-          type: keyvalue
-          name: lark-redis
-          property: connectionString
       - key: LARK_APP_ID
         sync: false
       - key: LARK_APP_SECRET
@@ -62,18 +31,95 @@ services:
         value: "500"
       - key: MINIMUM_UNIT_PRICE
         value: "225"
-      # Dashboard URL, e.g. https://lark-dashboard.onrender.com (no trailing slash)
-      - key: CORS_ORIGINS
+      # Better Stack: one Logs source per stream (Sources → Connect source → Python).
+      # Leave a pair empty to keep that stream in Render's log view only.
+      - key: BETTERSTACK_APP_TOKEN
         sync: false
-      # Better Stack (optional; leave empty to turn off)
-      - key: BETTERSTACK_SOURCE_TOKEN
+      - key: BETTERSTACK_APP_HOST
         sync: false
-      - key: BETTERSTACK_INGEST_HOST
+      - key: BETTERSTACK_CELERY_TOKEN
+        sync: false
+      - key: BETTERSTACK_CELERY_HOST
+        sync: false
+      - key: BETTERSTACK_REDIS_TOKEN
+        sync: false
+      - key: BETTERSTACK_REDIS_HOST
+        sync: false
+      - key: BETTERSTACK_SERVER_TOKEN
+        sync: false
+      - key: BETTERSTACK_SERVER_HOST
         sync: false
       - key: BETTERSTACK_ERRORS_DSN
         sync: false
 
-  # ---- Dashboard: static site ----
+services:
+  # ---- Redis ----
+  - type: keyvalue
+    name: lark-redis
+    # Starter or higher: the free plan keeps no data on disk (reminders and customers would be lost).
+    plan: starter
+    region: singapore # all services must be in the same region
+    maxmemoryPolicy: noeviction # Celery tasks must never be evicted
+    ipAllowList: [] # only reachable from your Render services
+
+  # ---- API + Lark long connection ----
+  - type: web
+    name: lark-backend
+    runtime: python
+    rootDir: backend
+    # Starter or higher: free instances sleep after 15 min, which drops the Lark connection.
+    plan: starter
+    region: singapore
+    numInstances: 1 # only ONE copy may hold the Lark long connection
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m app.main
+    healthCheckPath: /health
+    # Only needed once: imports customers.json from the old Node version into Redis.
+    disk:
+      name: lark-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - fromGroup: lark-shared
+      - key: DATA_DIR
+        value: /data
+      - key: REDIS_URL
+        fromService: { type: keyvalue, name: lark-redis, property: connectionString }
+      # Dashboard URL, e.g. https://lark-dashboard.pages.dev (no trailing slash)
+      - key: CORS_ORIGINS
+        sync: false
+
+  # ---- Celery worker + Beat ----
+  - type: worker
+    name: lark-celery
+    runtime: python
+    rootDir: backend
+    plan: starter
+    region: singapore
+    numInstances: 1 # Beat runs inside this worker: keep ONE instance
+    buildCommand: pip install -r requirements.txt
+    startCommand: celery -A app.celery_app worker -B --loglevel=INFO --concurrency=2 --schedule=/tmp/celerybeat-schedule
+    envVars:
+      - fromGroup: lark-shared
+      - key: REDIS_URL
+        fromService: { type: keyvalue, name: lark-redis, property: connectionString }
+
+  # ---- Flower (watch Celery) ----
+  - type: web
+    name: lark-flower
+    runtime: python
+    rootDir: backend
+    plan: free # sleeps when unused; that's fine for a monitoring page
+    region: singapore
+    buildCommand: pip install -r requirements.txt
+    startCommand: celery -A app.celery_app flower --address=0.0.0.0 --port=$PORT --basic-auth=admin:$FLOWER_PASSWORD
+    envVars:
+      - key: FLOWER_PASSWORD
+        generateValue: true
+      - key: REDIS_URL
+        fromService: { type: keyvalue, name: lark-redis, property: connectionString }
+
+  # ---- Dashboard (static) ----
   - type: web
     name: lark-dashboard
     runtime: static

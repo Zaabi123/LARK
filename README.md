@@ -1,36 +1,57 @@
 # Lark AI agent
 
-Your AI sales agent on Lark (also works with Feishu 飞书).
+Your AI sales agent on Lark (also works with Feishu 飞书). Python backend: FastAPI + Celery + Redis.
 
-- **Outbound:** your agent or app messages a customer with `POST /lark/send`,
-  or from the command line with `npm run send`.
-- **Inbound:** when a customer messages your bot, the agent replies in the same
-  chat. It uses Groq to write the reply and follows your pricing rules, which
-  are enforced in code.
+- **Inbound:** when a customer messages your bot, the agent replies in the same chat. It uses Groq to
+  write the reply and follows your pricing rules, which are enforced in code.
+- **Outbound:** message a customer with `POST /lark/send`, the dashboard, or `python send.py`.
+- **Reminders:** schedule a message for later (once, daily or weekly). Celery Beat checks every 15 s
+  and the Celery worker sends it.
+- **Logs:** application, Celery, Redis and server logs each go to their **own Better Stack source**.
 
-Incoming messages use Lark's **long connection** (WebSocket) mode: the server
-connects to Lark itself, so you don't need a public URL or a tunnel.
+Incoming messages use Lark's **long connection** (WebSocket) mode: the server connects to Lark
+itself, so you don't need a public URL or a tunnel.
+
+## How it fits together
+
+```
+                    ┌──────────── lark-backend (python -m app.main) ────────────┐
+ Dashboard / API ──▶│ FastAPI  /lark/send  /lark/customers  /lark/reminders      │
+                    │ Lark listener (child process, WebSocket to Lark) ──▶ AI    │
+                    └───────────────┬───────────────────────────────────────────┘
+                                    │ customers, conversations, reminders, task queue
+                              ┌─────▼─────┐
+                              │   Redis   │◀── Flower (watch Celery)
+                              └─────▲─────┘
+                                    │ every 15 s: due reminders → send_reminder task
+                    ┌───────────────┴── lark-celery (worker -B) ────────────────┐
+                    │ Celery Beat + worker → sends reminders in Lark             │
+                    └────────────────────────────────────────────────────────────┘
+```
 
 ## Project layout
 
 ```
-backend/                           Node server: deploy to Railway
-  src/
-    agent/existing-agent.js        AI agent and pricing rules
-    integrations/lark/
-      lark.service.js              Lark API (official SDK), customer list
-      lark.controller.js           inbound replies, outbound send, STOP/START
-      lark.routes.js               HTTP routes and auth
-    server.js                      config, CORS, long connection, startup
-  send.js                          command-line sender
-  railway.json                     Railway build/start/health check
-frontend/                          static dashboard: deploy to Vercel
-  index.html                       customer list + send a message
-  build.mjs                        writes dist/ and config.js (API_URL)
-  vercel.json
+backend/
+  app/
+    main.py          FastAPI API; starts the Lark listener
+    listener.py      Lark long connection: receives messages, replies via the agent
+    agent.py         AI agent and pricing rules
+    lark_api.py      Lark API (official lark-oapi SDK): send / reply, error explanations
+    messaging.py     conversations, STOP/START, per-customer lock
+    store.py         everything kept in Redis
+    reminders.py     schedule / list / cancel reminders
+    celery_app.py    Celery app + Beat schedule
+    tasks.py         Celery tasks: dispatch due reminders, send, Redis stats, prune
+    logs.py          the four Better Stack log streams + Error tracking
+    config.py        settings from .env
+  send.py            command-line sender
+  requirements.txt
+  Dockerfile
+docker-compose.yml   Redis + API + Celery + Flower on your PC
+render.yaml          Render Blueprint (Redis, API, Celery, Flower, dashboard)
+frontend/            static dashboard (Cloudflare Pages / Render static site)
 ```
-
-Run the commands below inside `backend/` unless a step says otherwise.
 
 ## 1. Set up Lark
 
@@ -38,69 +59,114 @@ Run the commands below inside `backend/` unless a step says otherwise.
    and sign in with an admin account of your Lark workspace.
 2. **Create Custom App** → give it a name, description and icon.
 3. **Credentials:** *Credentials & Basic Info* → copy **App ID** and
-   **App Secret** into `.env` as `LARK_APP_ID` and `LARK_APP_SECRET`.
+   **App Secret** into `backend/.env` as `LARK_APP_ID` and `LARK_APP_SECRET`.
    For Feishu set `LARK_DOMAIN=feishu`.
 4. **Enable the bot:** *Add features* → **Bot** → enable.
-5. **Permissions:** *Permissions & Scopes* → add:
-   - `im:message` (read and send messages)
-   - `im:message:send_as_bot` (send messages as the bot)
-   - `im:message.p2p_msg:readonly` (receive 1-to-1 messages)
-   - `im:message.group_at_msg:readonly` (receive group messages that @mention the bot)
-6. **Start the server once** (`npm start`, see below). Lark only lets you pick
-   long connection mode while it's running.
-7. **Events:** *Events & Callbacks* → *Event configuration* → subscription
-   mode **Receive events through persistent connection** (使用长连接接收事件)
-   → Save. Then **Add events** → `im.message.receive_v1` (Message received).
-8. **Publish:** *Version Management & Release* → create a version, set
-   availability to the people who should be able to chat with the bot, and
-   submit. Changes don't take effect until the version is approved/published.
+5. **Permissions:** *Permissions & Scopes* → add `im:message`, `im:message:send_as_bot`,
+   `im:message.p2p_msg:readonly`, `im:message.group_at_msg:readonly`.
+6. **Start the server once** (see below). Lark only lets you pick long connection mode while it's running.
+7. **Events:** *Events & Callbacks* → subscription mode **Receive events through persistent
+   connection** → Save → **Add events** → `im.message.receive_v1`.
+8. **Publish:** *Version Management & Release* → create a version, set availability, submit.
 
-## 2. Run it
+## 2. Run it on your PC
+
+**With Docker (Redis, API, Celery worker + Beat, Flower):**
 
 ```powershell
-cd backend
-npm install
-npm start
+copy backend\.env.example backend\.env    # then fill it in
+docker compose up --build
 ```
 
-In the Lark app, search for your bot's name and send it a message. The agent
-replies.
+- API: http://localhost:3007 · Flower: http://localhost:5555 (user `admin`, password `FLOWER_PASSWORD`, default `admin`)
+- While it runs, Lark sends bot messages to your PC instead of Render. Stop it with
+  `docker compose down`, or set `LARK_LISTENER=off` in `backend/.env` to test without the bot.
 
-Dashboard locally: `cd frontend`, then `npm run dev`, and open http://localhost:5310.
-Add `CORS_ORIGINS=http://localhost:5310` to `backend/.env`.
+**Without Docker** (needs a Redis at `REDIS_URL`), in `backend/`:
 
-## Deploy on Render (backend + dashboard)
+```powershell
+py -3.13 -m venv .venv
+.venv\Scripts\pip install -r requirements.txt
+.venv\Scripts\python -m app.main                                          # terminal 1: API + bot
+.venv\Scripts\celery -A app.celery_app worker -B --pool=solo -l INFO      # terminal 2: Celery (Windows needs --pool=solo)
+.venv\Scripts\celery -A app.celery_app flower                             # terminal 3: Flower (optional)
+```
 
-`render.yaml` describes both services. Run only **one** copy of the backend
-(stop the local server and any Railway deploy first).
+Dashboard locally: `cd frontend`, `npm run dev`, open http://localhost:5310, and add
+`CORS_ORIGINS=http://localhost:5310` to `backend/.env`.
 
-1. Push this repo to GitHub.
-2. Render → **New → Blueprint** → pick this repo → Render reads `render.yaml`.
-3. Fill in the values it asks for: `LARK_APP_ID`, `LARK_APP_SECRET`,
-   `MODEL_API_KEY`. Leave `CORS_ORIGINS`, `API_URL` and the Better Stack values
-   empty for now. **Apply.**
-4. When both are live, copy the URLs and set:
-   - `lark-backend` → Environment → `CORS_ORIGINS` = `https://lark-dashboard.onrender.com`
-     (your real dashboard URL, no trailing slash)
-   - `lark-dashboard` → Environment → `API_URL` = `https://lark-backend.onrender.com`,
-     then **Manual Deploy** so the dashboard is rebuilt with it.
-5. `AGENT_API_KEY` is generated for you: `lark-backend` → Environment → reveal
-   it, then paste it into the dashboard and click **Connect**.
+## 3. Deploy on Render
 
-The backend uses the **Starter** plan: free instances sleep after 15 minutes
-without web traffic, which closes the Lark long connection, and they can't have
-a disk. The 1 GB disk at `/data` keeps `customers.json` (incl. STOP opt-outs)
-across deploys. The dashboard is a free static site.
+`render.yaml` creates everything. Run only **one** copy of the bot (stop any local one first).
 
-## Redis: conversation cache and scheduled reminders
+1. Render → **New → Blueprint** → pick this repo → **Apply**. Fill in `LARK_APP_ID`,
+   `LARK_APP_SECRET`, `MODEL_API_KEY`, `CORS_ORIGINS`, and the Better Stack values (below).
+2. Services it creates:
 
-With `REDIS_URL` set (on Render it comes from the `lark-redis` Key Value service in
-`render.yaml`):
+| Service | What | Plan |
+|---|---|---|
+| `lark-redis` | Redis (Key Value), `noeviction` | Starter |
+| `lark-backend` | API + Lark bot (`python -m app.main`) | Starter |
+| `lark-celery` | Celery worker with Beat (`celery -A app.celery_app worker -B`) | Starter |
+| `lark-flower` | Flower, to watch Celery tasks (user `admin`, password = `FLOWER_PASSWORD`, generated) | Free |
+| `lark-dashboard` | static dashboard (skip if you use Cloudflare Pages) | Free |
 
-- **Conversation history** is kept in Redis (`lark:session:<customer>`, expires after 24 h without
-  activity), so the agent remembers context across restarts and redeploys.
-- **Scheduled reminders** run on [BullMQ](https://docs.bullmq.io) (the Node.js equivalent of Celery +
-  Celery Beat). Schedule from the dashboard (*Send a message → Schedule*) or the API:
+3. `AGENT_API_KEY` is generated in the `lark-shared` environment group. Paste it into the dashboard.
+
+**Moving from the Node version:** Render can't switch an existing service from Node to Python.
+Delete the old `lark-backend` service (or rename it) before syncing the Blueprint. On first start
+the new backend imports `customers.json` from `/data` into Redis if it finds it.
+
+## 4. Better Stack: separate logs
+
+Create **four Logs sources** in Better Stack → Telemetry → **Sources → Connect source → Python**,
+and put each source's **token** and **ingesting host** in the `lark-shared` environment group:
+
+| Better Stack source | Env vars | What you see |
+|---|---|---|
+| **lark-app** (application) | `BETTERSTACK_APP_TOKEN`, `BETTERSTACK_APP_HOST` | messages received, AI replies (tokens, cost), sends, STOP/START, Lark SDK |
+| **lark-celery** | `BETTERSTACK_CELERY_TOKEN`, `BETTERSTACK_CELERY_HOST` | worker/Beat start, tasks, reminders scheduled / sent / failed / cancelled |
+| **lark-redis** | `BETTERSTACK_REDIS_TOKEN`, `BETTERSTACK_REDIS_HOST` | connections, errors, and every minute: memory, clients, ops/s, hit rate, keys, Celery queue length |
+| **lark-server** | `BETTERSTACK_SERVER_TOKEN`, `BETTERSTACK_SERVER_HOST` | HTTP access log and uvicorn server logs (health checks left out) |
+
+**Render's own server logs** (builds, deploys, restarts, crashes): Better Stack → Sources →
+Connect source → **Render** → copy the syslog endpoint. Then Render → **Workspace Settings →
+Log Streams → Add** → paste it. That makes a fifth source with everything Render prints.
+
+**Errors:** `BETTERSTACK_ERRORS_DSN` (Better Stack → Errors → application → DSN) gets crashes and
+handled failures: Lark send failures, AI failures, Redis errors, reminders that gave up.
+
+Log lines carry fields you can filter and chart on, e.g. `event = "reminder_sent"`,
+`event = "ai_reply"` with `cost_usd`, `event = "redis_stats"` with `used_memory_mb`.
+
+## 5. Send a message to a customer
+
+| Who | Address | How you get it |
+|---|---|---|
+| Someone who chatted with the bot | `user:<open_id>` (starts with `ou_`) | `python send.py --list` after they message the bot |
+| A group chat the bot is in | `chat:<chat_id>` (starts with `oc_`) | Add the bot to the group, @mention it once, then `python send.py --list` |
+| A member of your Lark workspace | `email:<work email>` | Their Lark account email |
+
+External customers (outside your workspace): create an external group with them, add the bot, and
+message the group with `chat:<chat_id>`.
+
+```powershell
+python send.py --list
+python send.py user:ou_1234abcd "Hi! Your order of 500 pieces has shipped."
+python send.py --url https://lark-backend.onrender.com chat:oc_5678efgh "Hi! Your quotation is ready."
+```
+
+From your own code:
+
+```http
+POST https://lark-backend.onrender.com/lark/send
+Authorization: Bearer <AGENT_API_KEY>
+Content-Type: application/json
+
+{ "to": "chat:oc_5678efgh", "text": "Hi! Your order has shipped." }
+```
+
+## 6. Reminders
 
 ```http
 POST /lark/reminders
@@ -110,87 +176,18 @@ Content-Type: application/json
 { "to": "user:ou_1234abcd", "text": "Reminder: payment is due tomorrow.", "at": "2026-11-20T09:00:00+05:30", "repeat": "none" }
 ```
 
-`repeat` is `none` (once), `daily` or `weekly`. `GET /lark/reminders` lists them,
-`DELETE /lark/reminders/<id>` cancels one (or stops a repeating one). Reminders skip customers who
-sent STOP, and a failed send is retried twice (after 1 and 2 minutes).
-
-**Better Stack:** every step is logged (`[reminder] … scheduled / sent / failed`, `[redis] …`) and
-sent as events `reminder_scheduled`, `reminder_sent`, `reminder_failed`, `reminder_cancelled`.
-A reminder that finally fails, and Redis errors, also go to Error tracking.
-
-**Queue dashboard (like Celery's Flower):** open `https://<your-backend>/queues`, any username,
-password = `AGENT_API_KEY`. It shows delayed, repeating, completed and failed reminder jobs with
-their data and errors, and lets you retry or delete them.
-
-Without `REDIS_URL` the app still runs: history is kept in memory and reminders are off.
-
-## Deploy: backend on Railway, dashboard on Vercel
-
-Run only **one** copy of the backend. Lark sends each message to one open long
-connection, so stop the local server once Railway is running.
-
-**Backend (Railway)**
-1. Railway → **New Project → Deploy from GitHub repo** → pick this repo.
-2. Service → **Settings → Root Directory** = `backend`. `railway.json` sets the
-   start command and the `/health` check.
-3. **Variables:** copy every value from `backend/.env` (`LARK_APP_ID`,
-   `LARK_APP_SECRET`, `LARK_DOMAIN`, `AGENT_API_KEY`, `MODEL_API_KEY`, the
-   price settings), plus `CORS_ORIGINS` = your Vercel URL. Don't set `HOST` or
-   `PORT`; Railway handles them.
-4. **Keep customers across deploys:** add a **Volume** mounted at `/data` and
-   set `DATA_DIR=/data`. Without it, `customers.json` (including STOP
-   opt-outs) is reset on every deploy.
-5. **Settings → Networking → Generate Domain** gives your backend URL.
-
-**Dashboard (Vercel)**
-1. Vercel → **Add New → Project** → import this repo → **Root Directory** = `frontend`.
-2. **Environment Variables:** `API_URL` = the Railway URL. Deploy.
-3. Put the Vercel URL into Railway's `CORS_ORIGINS`.
-4. Open the Vercel URL, paste your `AGENT_API_KEY`, and click **Connect**.
-
-## 3. Send a message to a customer
-
-| Who | Address | How you get it |
-|---|---|---|
-| Someone who chatted with the bot | `user:<open_id>` (starts with `ou_`) | `npm run send -- --list` after they message the bot |
-| A group chat the bot is in | `chat:<chat_id>` (starts with `oc_`) | Add the bot to the group, @mention it once, then `npm run send -- --list` |
-| A member of your Lark workspace | `email:<work email>` | Their Lark account email |
-
-**External customers** (outside your Lark workspace): a custom app can only
-chat 1-to-1 with people in your workspace. For an external customer, create an
-external group with them, add the bot (the app must allow external groups),
-and message the group with `chat:<chat_id>`.
-
-With the server running, in a second terminal:
-
-```powershell
-npm run send -- --list
-npm run send -- user:ou_1234abcd "Hi! Your order of 500 pieces has shipped."
-npm run send -- chat:oc_5678efgh "Hi! Your quotation is ready."
-npm run send -- email:buyer@yourcompany.com "Hi! Your quotation is ready."
-```
-
-From your own code:
-
-```http
-POST http://127.0.0.1:3007/lark/send
-Authorization: Bearer <AGENT_API_KEY from .env>
-Content-Type: application/json
-
-{ "to": "chat:oc_5678efgh", "text": "Hi! Your order has shipped." }
-```
-
-In a group, the bot only receives messages that @mention it.
+`repeat` is `none`, `daily` or `weekly`. `GET /lark/reminders` lists them, `DELETE /lark/reminders/<id>`
+cancels one. A failed send is retried after 1 and 2 minutes; customers who sent STOP are skipped.
+Watch the tasks live in **Flower**.
 
 ## Opt-out (STOP)
 
-If a customer sends STOP (or 退订), the agent confirms, stops replying, and
-`/lark/send` refuses to message them until they send START (or 订阅).
+If a customer sends STOP (or 退订), the agent confirms, stops replying, and sends and reminders are
+refused until they send START (or 订阅).
 
 ## Notes
 
-- Conversation history is kept in memory and resets on restart. The customer
-  list, with opt-out status, is saved to `data/customers.json`.
-- Messages older than 5 minutes (e.g. redelivered after the server was off)
-  are not answered.
-- Keep `data/` and `.env` private; both are ignored by git.
+- Customers, conversations (24 h) and reminders live in Redis, so they survive restarts and deploys.
+- Messages older than 5 minutes (e.g. redelivered after the server was off) are not answered, and a
+  message Lark delivers twice is answered once.
+- Keep `.env` private; it is ignored by git.

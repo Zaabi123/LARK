@@ -1,0 +1,46 @@
+# Run everything on your PC with Docker:  docker compose up --build
+#   API            http://localhost:3007
+#   Flower         http://localhost:5555   (user admin, password FLOWER_PASSWORD from backend/.env, default "admin")
+#   Redis          localhost:6379
+# Settings come from backend/.env. While this runs, Lark sends bot messages here instead of Render:
+# stop it (docker compose down) when you're done, or set LARK_LISTENER=off in backend/.env.
+x-backend: &backend
+  build: ./backend
+  env_file: ./backend/.env
+  environment:
+    REDIS_URL: redis://redis:6379/0
+  depends_on:
+    redis:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --maxmemory-policy noeviction
+    ports: ["6379:6379"]
+    volumes: [redis-data:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+
+  api:
+    <<: *backend
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      HOST: 0.0.0.0
+      PORT: "3007"
+    ports: ["3007:3007"]
+
+  celery:
+    <<: *backend
+    command: celery -A app.celery_app worker -B --loglevel=INFO --concurrency=2 --schedule=/tmp/celerybeat-schedule
+
+  flower:
+    <<: *backend
+    command: sh -c 'celery -A app.celery_app flower --address=0.0.0.0 --port=5555 --basic-auth=admin:$${FLOWER_PASSWORD:-admin}'
+    ports: ["5555:5555"]
+
+volumes:
+  redis-data:

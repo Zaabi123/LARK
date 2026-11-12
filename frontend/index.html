@@ -293,7 +293,7 @@
 
   // ---- Reminders ----
   const REPEAT_LABEL = { none: "Once", daily: "Every day", weekly: "Every week" };
-  const STATE_LABEL = { scheduled: "Scheduled", repeating: "Next run", active: "Sending…", sent: "Sent", failed: "Failed" };
+  const STATE_LABEL = { scheduled: "Scheduled", repeating: "Next run", active: "Sending…", sent: "Sent", failed: "Failed", cancelled: "Cancelled" };
   async function loadReminders() {
     const tbody = $("reminders");
     let items;
