@@ -1,5 +1,6 @@
 // The AI sales agent: pricing rules enforced in code + an LLM (Groq) that drafts the wording.
 // Channel-agnostic: Lark (or any other channel) passes text in and sends the reply out.
+import { recordAiError, recordAiReply } from "../instrument.js";
 
 // ---------------------------------------------------------------------------
 // Negotiation rules
@@ -187,6 +188,19 @@ function systemPrompt(plan, config) {
 }
 
 async function callModel(history, message, plan, config) {
+  const started = performance.now();
+  const seconds = () => (performance.now() - started) / 1000;
+  try {
+    const { reply, usage } = await requestModel(history, message, plan, config);
+    recordAiReply(config.modelName, usage, seconds());
+    return reply;
+  } catch (error) {
+    recordAiError(config.modelName, seconds());
+    throw error;
+  }
+}
+
+async function requestModel(history, message, plan, config) {
   const response = await fetch(config.modelApiUrl, {
     method: "POST",
     headers: {
@@ -215,7 +229,7 @@ async function callModel(history, message, plan, config) {
   const result = await response.json();
   const reply = result?.choices?.[0]?.message?.content;
   if (typeof reply !== "string" || !reply.trim()) throw new Error("Model API returned no text.");
-  return reply.trim().slice(0, 1500);
+  return { reply: reply.trim().slice(0, 1500), usage: result.usage };
 }
 
 /**

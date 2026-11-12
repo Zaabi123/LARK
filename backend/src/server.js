@@ -1,5 +1,6 @@
 import "dotenv/config";
-import { setupErrorMonitoring } from "./monitoring.js"; // Better Stack: loads right after .env, before anything logs
+// Better Stack. `npm start` already loads this first (node --import), so this import reuses that copy.
+import { setupErrorMonitoring } from "./instrument.js";
 import express from "express";
 import * as Lark from "@larksuiteoapi/node-sdk";
 import { pathToFileURL } from "node:url";

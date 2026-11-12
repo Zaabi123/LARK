@@ -1,6 +1,7 @@
 // Talks to the Lark Open Platform API (via the official SDK) and stores the customer directory.
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import * as lark from "@larksuiteoapi/node-sdk";
+import { recordMessageSent, recordSendFailure } from "../../instrument.js";
 
 export const MAX_TEXT_LENGTH = 4000;
 
@@ -104,26 +105,44 @@ export function createLarkService({ appId, appSecret, domain, dataDir }) {
   // ---- Sending -----------------------------------------------------------------
   const textContent = (text) => JSON.stringify({ text: String(text).slice(0, MAX_TEXT_LENGTH) });
 
+  /** Counts and logs every send to Lark ("send" = new message, "reply" = answer to a customer). */
+  async function tracked(kind, target, work) {
+    try {
+      const data = await work();
+      recordMessageSent(kind);
+      console.log(`[send] ${kind} delivered to ${target}`);
+      return data;
+    } catch (error) {
+      recordSendFailure(kind, error);
+      console.error(`[send] ${kind} FAILED to ${target}: ${error.message}`);
+      throw error;
+    }
+  }
+
   /** Send a new message to a customer key (user:..., chat:... or email:...). */
   async function sendText(key, text) {
     const type = key.slice(0, key.indexOf(":"));
     const id = key.slice(key.indexOf(":") + 1);
-    const data = await call(
-      client.im.v1.message.create({
-        params: { receive_id_type: RECEIVE_ID_TYPE[type] },
-        data: { receive_id: id, msg_type: "text", content: textContent(text) },
-      }),
+    const data = await tracked("send", key, () =>
+      call(
+        client.im.v1.message.create({
+          params: { receive_id_type: RECEIVE_ID_TYPE[type] },
+          data: { receive_id: id, msg_type: "text", content: textContent(text) },
+        }),
+      ),
     );
     return { id: data.message_id, chatId: data.chat_id };
   }
 
   /** Reply to a specific incoming message (shows as a reply in the same chat). */
   async function replyText(messageId, text) {
-    const data = await call(
-      client.im.v1.message.reply({
-        path: { message_id: messageId },
-        data: { msg_type: "text", content: textContent(text) },
-      }),
+    const data = await tracked("reply", `message ${messageId}`, () =>
+      call(
+        client.im.v1.message.reply({
+          path: { message_id: messageId },
+          data: { msg_type: "text", content: textContent(text) },
+        }),
+      ),
     );
     return { id: data.message_id };
   }

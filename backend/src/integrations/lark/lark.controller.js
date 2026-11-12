@@ -3,6 +3,7 @@
 //  - outbound: your agent/app -> POST /lark/send -> customer
 import { emptySession, runAgentTurn } from "../../agent/existing-agent.js";
 import { LarkError, MAX_TEXT_LENGTH, parseCustomerKey } from "./lark.service.js";
+import { recordMessageReceived, withSpan } from "../../instrument.js";
 
 const OPT_OUT = /^(stop|unsubscribe|退订)$/i;
 const OPT_IN = /^(start|subscribe|订阅)$/i;
@@ -78,7 +79,8 @@ export function createLarkController({ lark, agentConfig }) {
       return;
     }
 
-    const { reply: answer, nextState } = await runAgentTurn(text, getSession(key), agentConfig);
+    const { reply: answer, nextState, source } = await runAgentTurn(text, getSession(key), agentConfig);
+    console.log(`[ai] replied to ${key} (${source})`);
     await reply(answer);
     sessions.set(key, nextState);
   }
@@ -95,7 +97,11 @@ export function createLarkController({ lark, agentConfig }) {
     if (processed.size > maxProcessed) processed.delete(processed.values().next().value);
 
     const key = keyFor(event);
-    enqueue(key, () => handleInbound(event)).catch((error) => {
+    recordMessageReceived(message.chat_type);
+    // One trace per customer message: its logs, the Groq call and the Lark reply are grouped under it.
+    withSpan("lark.message", { "lark.chat_type": message.chat_type, "lark.customer": key }, () =>
+      enqueue(key, () => handleInbound(event)),
+    ).catch((error) => {
       console.error(`Could not reply to ${key}: ${error.message}`);
     });
   }
