@@ -2,19 +2,28 @@
 // (it must run before Express is loaded so requests can be traced). Each part switches on only when its
 // variables are set (Railway → Variables); without them (e.g. local runs) nothing is sent.
 //
-//   BETTERSTACK_SOURCE_TOKEN + BETTERSTACK_INGEST_HOST →
-//     Logs:    every console.* line, tagged with the trace_id of the request/message that caused it
+//   BETTERSTACK_SOURCE_TOKEN + BETTERSTACK_INGEST_HOST (Logs source) →
+//     Logs:    every console.* line, tagged with the trace_id of the request/message that caused it,
+//              plus business events: message_received, ai_reply (tokens, cost), send_ok, send_failed
+//   BETTERSTACK_OTEL_TOKEN + BETTERSTACK_OTEL_HOST (OpenTelemetry source; falls back to the Logs source) →
 //     Traces:  HTTP requests, Express routes, outgoing calls (Groq, Lark), one span per Lark message
 //     Metrics: response times, RSS/heap, CPU %, event-loop lag, and the business counters below
+//   Trace sampling (optional): OTEL_TRACES_SAMPLER=parentbased_traceidratio, OTEL_TRACES_SAMPLER_ARG=0.2
 //   BETTERSTACK_ERRORS_DSN → crashes and Express route errors go to Better Stack Errors
 import "dotenv/config";
 import { register } from "node:module";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { metrics, SpanStatusCode, trace } from "@opentelemetry/api";
 
+const toUrl = (h) => h && (h.startsWith("http") ? h : `https://${h}`).replace(/\/+$/, "");
+// Logs source (Logtail).
 const token = process.env.BETTERSTACK_SOURCE_TOKEN;
-const rawHost = process.env.BETTERSTACK_INGEST_HOST || process.env.BETTERSTACK_HOST; // old name still works
-const host = rawHost && (rawHost.startsWith("http") ? rawHost : `https://${rawHost}`).replace(/\/+$/, "");
+const host = toUrl(
+  process.env.BETTERSTACK_INGEST_HOST || process.env.BETTERSTACK_INGESTING_HOST || process.env.BETTERSTACK_HOST,
+);
+// Optional separate OpenTelemetry source for traces + metrics (e.g. "lark-backend-otel"); defaults to the Logs source.
+const otelToken = process.env.BETTERSTACK_OTEL_TOKEN || token;
+const otelHost = toUrl(process.env.BETTERSTACK_OTEL_HOST) || host;
 const dsn = process.env.BETTERSTACK_ERRORS_DSN;
 const serviceName = (process.env.OTEL_SERVICE_NAME ||= "lark-backend");
 
@@ -23,12 +32,12 @@ let logtail = null;
 let sentry = null;
 
 // ---- Traces + metrics (OpenTelemetry → Better Stack OTLP) -------------------------
-if (token && host) {
+if (otelToken && otelHost) {
   try {
     // Lets the instrumentations patch ESM imports (this app is "type": "module").
     register("@opentelemetry/instrumentation/hook.mjs", import.meta.url);
-    process.env.OTEL_EXPORTER_OTLP_ENDPOINT ||= host;
-    process.env.OTEL_EXPORTER_OTLP_HEADERS ||= `Authorization=Bearer%20${token}`;
+    process.env.OTEL_EXPORTER_OTLP_ENDPOINT ||= otelHost;
+    process.env.OTEL_EXPORTER_OTLP_HEADERS ||= `Authorization=Bearer%20${otelToken}`;
     process.env.OTEL_EXPORTER_OTLP_PROTOCOL ||= "http/protobuf";
     process.env.OTEL_TRACES_EXPORTER ||= "otlp";
     process.env.OTEL_METRICS_EXPORTER ||= "otlp";
@@ -138,16 +147,31 @@ meter.addBatchObservableCallback(
   [rss, heap, cpu, lag],
 );
 
+/**
+ * Business event as a structured log record in the Logs source (for messages/day, failed sends and
+ * cost/day charts). Fields are queryable, e.g. event = 'ai_reply', cost_usd. Never pass message text.
+ */
+export function logEvent(event, fields = {}) {
+  if (!logtail) return;
+  const span = trace.getActiveSpan()?.spanContext();
+  const context = { event, ...fields, ...(span ? { trace_id: span.traceId, span_id: span.spanId } : {}) };
+  logtail.info(`[event] ${event}`, context).catch(() => {});
+}
+
 export function recordMessageReceived(chatType = "unknown") {
   messagesReceived.add(1, { chat_type: chatType });
+  logEvent("message_received", { chat_type: chatType });
 }
 
 export function recordMessageSent(kind) {
   messagesSent.add(1, { kind });
+  logEvent("send_ok", { kind });
 }
 
 export function recordSendFailure(kind, error) {
-  sendFailures.add(1, { kind, code: String(error?.code ?? error?.status ?? "error") });
+  const code = String(error?.code ?? error?.status ?? "error");
+  sendFailures.add(1, { kind, code });
+  logEvent("send_failed", { kind, code, reason: String(error?.message ?? "").slice(0, 120) });
 }
 
 /** Call after a successful model call with its OpenAI-style `usage`. */
@@ -159,13 +183,16 @@ export function recordAiReply(model, usage, seconds) {
   aiTokens.add(input, { model, type: "input" });
   aiTokens.add(output, { model, type: "output" });
   const price = PRICES[model];
-  if (price) aiCost.add((input * price.input + output * price.output) / 1e6, { model });
+  const cost = price ? (input * price.input + output * price.output) / 1e6 : null;
+  if (price) aiCost.add(cost, { model });
   else console.warn(`[monitoring] no price for model "${model}" — add it to PRICES in src/instrument.js`);
+  logEvent("ai_reply", { model, input_tokens: input, output_tokens: output, cost_usd: cost, duration_s: seconds });
 }
 
 export function recordAiError(model, seconds) {
   aiLatency.record(seconds, { model, outcome: "error" });
   aiErrors.add(1, { model });
+  logEvent("ai_failed", { model, duration_s: seconds });
 }
 
 /** Runs `fn` inside a new trace span, so its logs and outgoing calls are grouped together. */
