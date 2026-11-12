@@ -2,6 +2,16 @@
 # Creates the backend (web service) and the dashboard (static site).
 # Values marked "sync: false" are asked for once when you create the Blueprint.
 services:
+  # ---- Redis (Render Key Value): conversation cache + BullMQ reminder queue ----
+  - type: keyvalue
+    name: lark-redis
+    # Starter or higher: the free plan keeps no data on disk, so scheduled reminders
+    # would be lost whenever it restarts.
+    plan: starter
+    region: singapore # must match the backend's region
+    maxmemoryPolicy: noeviction # required by BullMQ (jobs must never be evicted)
+    ipAllowList: [] # only reachable from your Render services
+
   # ---- Backend: Node server with the Lark long connection ----
   - type: web
     name: lark-backend
@@ -25,6 +35,11 @@ services:
         value: "22"
       - key: DATA_DIR
         value: /data
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: lark-redis
+          property: connectionString
       - key: LARK_APP_ID
         sync: false
       - key: LARK_APP_SECRET

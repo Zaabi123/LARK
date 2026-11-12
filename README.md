@@ -92,6 +92,34 @@ without web traffic, which closes the Lark long connection, and they can't have
 a disk. The 1 GB disk at `/data` keeps `customers.json` (incl. STOP opt-outs)
 across deploys. The dashboard is a free static site.
 
+## Redis: conversation cache and scheduled reminders
+
+With `REDIS_URL` set (on Render it comes from the `lark-redis` Key Value service in
+`render.yaml`):
+
+- **Conversation history** is kept in Redis (`lark:session:<customer>`, expires after 24 h without
+  activity), so the agent remembers context across restarts and redeploys.
+- **Scheduled reminders** run on [BullMQ](https://docs.bullmq.io) (the Node.js equivalent of Celery +
+  Celery Beat). Schedule from the dashboard (*Send a message → Schedule*) or the API:
+
+```http
+POST /lark/reminders
+Authorization: Bearer <AGENT_API_KEY>
+Content-Type: application/json
+
+{ "to": "user:ou_1234abcd", "text": "Reminder: payment is due tomorrow.", "at": "2026-11-20T09:00:00+05:30", "repeat": "none" }
+```
+
+`repeat` is `none` (once), `daily` or `weekly`. `GET /lark/reminders` lists them,
+`DELETE /lark/reminders/<id>` cancels one (or stops a repeating one). Reminders skip customers who
+sent STOP, and a failed send is retried twice (after 1 and 2 minutes).
+
+**Better Stack:** every step is logged (`[reminder] … scheduled / sent / failed`, `[redis] …`) and
+sent as events `reminder_scheduled`, `reminder_sent`, `reminder_failed`, `reminder_cancelled`.
+A reminder that finally fails, and Redis errors, also go to Error tracking.
+
+Without `REDIS_URL` the app still runs: history is kept in memory and reminders are off.
+
 ## Deploy: backend on Railway, dashboard on Vercel
 
 Run only **one** copy of the backend. Lark sends each message to one open long

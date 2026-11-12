@@ -9,7 +9,9 @@
 //     Traces:  HTTP requests, Express routes, outgoing calls (Groq, Lark), one span per Lark message
 //     Metrics: response times, RSS/heap, CPU %, event-loop lag, and the business counters below
 //   Trace sampling (optional): OTEL_TRACES_SAMPLER=parentbased_traceidratio, OTEL_TRACES_SAMPLER_ARG=0.2
-//   BETTERSTACK_ERRORS_DSN → crashes and Express route errors go to Better Stack Errors
+//   BETTERSTACK_ERRORS_DSN → crashes, Express route errors and handled failures (sends, AI, Redis,
+//     reminders that gave up) go to Better Stack Errors
+//   Reminder events in Logs: reminder_scheduled, reminder_sent, reminder_failed, reminder_cancelled
 import "dotenv/config";
 import { register } from "node:module";
 import { monitorEventLoopDelay } from "node:perf_hooks";
@@ -52,6 +54,9 @@ if (otelToken && otelHost) {
           "@opentelemetry/instrumentation-fs": { enabled: false },
           "@opentelemetry/instrumentation-dns": { enabled: false },
           "@opentelemetry/instrumentation-net": { enabled: false },
+          // Only trace Redis commands made while handling a message/request/reminder, not BullMQ's
+          // constant background polling (that would flood Traces).
+          "@opentelemetry/instrumentation-ioredis": { requireParentSpan: true },
           // Railway's health checks would drown out real traffic.
           "@opentelemetry/instrumentation-http": { ignoreIncomingRequestHook: (req) => req.url === "/health" },
         }),
@@ -239,6 +244,12 @@ export function withSpan(name, attributes, fn) {
 }
 
 // ---- Wiring helpers ------------------------------------------------------------------
+const shutdownHooks = [];
+/** Run `fn` (e.g. close the reminder worker) before buffered logs are flushed on shutdown. */
+export function onShutdown(fn) {
+  shutdownHooks.push(fn);
+}
+
 /** Sends buffered logs/errors/traces (max 3 s). Call before the process exits. */
 export async function flushMonitoring() {
   await Promise.race([
@@ -254,7 +265,12 @@ export function setupErrorMonitoring(app) {
 
 // On Railway redeploys/restarts, send what's buffered, then exit as Node would.
 for (const signal of ["SIGTERM", "SIGINT"]) {
-  process.once(signal, () => flushMonitoring().finally(() => process.exit(signal === "SIGINT" ? 130 : 143)));
+  process.once(signal, async () => {
+    // Give hooks (reminder worker) up to 10 s to finish, then flush logs and exit.
+    await Promise.race([Promise.allSettled(shutdownHooks.map((fn) => fn())), new Promise((r) => setTimeout(r, 10_000))]);
+    await flushMonitoring();
+    process.exit(signal === "SIGINT" ? 130 : 143);
+  });
 }
 
 console.log(

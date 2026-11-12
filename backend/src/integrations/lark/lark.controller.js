@@ -8,18 +8,24 @@ import { recordMessageReceived, withSpan } from "../../instrument.js";
 const OPT_OUT = /^(stop|unsubscribe|退订)$/i;
 const OPT_IN = /^(start|subscribe|订阅)$/i;
 
-const sessionLifetimeMs = 24 * 60 * 60 * 1000;
 const maxProcessed = 10_000;
 const maxMessageAgeMs = 5 * 60 * 1000;
 
-export function createLarkController({ lark, agentConfig }) {
-  const sessions = new Map();
+/** Thrown when sending to a customer who sent STOP. */
+export class OptedOutError extends Error {
+  constructor(key) {
+    super(`${key} sent STOP. They must send START before you can message them.`);
+    this.key = key;
+  }
+}
+
+/** `sessions` is the conversation cache (Redis or memory, see session-store.js). */
+export function createLarkController({ lark, agentConfig, sessions }) {
   const queues = new Map();
   const processed = new Set();
 
-  function getSession(key) {
-    const previous = sessions.get(key);
-    return previous && Date.now() - previous.updatedAt < sessionLifetimeMs ? previous : emptySession();
+  async function getSession(key) {
+    return (await sessions.get(key)) ?? emptySession();
   }
 
   /** One message at a time per customer, so replies stay in order. */
@@ -61,7 +67,7 @@ export function createLarkController({ lark, agentConfig }) {
 
     if (OPT_OUT.test(text)) {
       await lark.touchCustomer(key, { ...profile, optedOut: true });
-      sessions.delete(key);
+      await sessions.delete(key);
       await reply("You've been unsubscribed and won't receive further messages. Send START to subscribe again.");
       return;
     }
@@ -79,10 +85,10 @@ export function createLarkController({ lark, agentConfig }) {
       return;
     }
 
-    const { reply: answer, nextState, source } = await runAgentTurn(text, getSession(key), agentConfig);
+    const { reply: answer, nextState, source } = await runAgentTurn(text, await getSession(key), agentConfig);
     console.log(`[ai] replied to ${key} (${source})`);
     await reply(answer);
-    sessions.set(key, nextState);
+    await sessions.set(key, nextState);
   }
 
   /** Called by the long connection for every im.message.receive_v1 event. */
@@ -107,6 +113,25 @@ export function createLarkController({ lark, agentConfig }) {
   }
 
   // ---- Outbound ----------------------------------------------------------------
+  /**
+   * Send `text` to a customer key and add it to their conversation, so the agent has context when
+   * they reply. Used by POST /lark/send and by scheduled reminders. Throws OptedOutError after STOP.
+   */
+  async function deliver(key, text) {
+    if ((await lark.getCustomer(key))?.optedOut) throw new OptedOutError(key);
+    return enqueue(key, async () => {
+      const sent = await lark.sendText(key, text);
+      await lark.touchCustomer(key);
+      const state = await getSession(key);
+      await sessions.set(key, {
+        ...state,
+        history: [...state.history, { role: "assistant", content: text.slice(0, 1000) }].slice(-10),
+        updatedAt: Date.now(),
+      });
+      return sent;
+    });
+  }
+
   /** POST /lark/send — { "to": "user:ou_..." | "chat:oc_..." | "email:a@b.com", "text": "Hello!" } */
   async function sendToCustomer(req, res) {
     const key = parseCustomerKey(req.body?.to);
@@ -117,25 +142,13 @@ export function createLarkController({ lark, agentConfig }) {
     if (!text || text.length > MAX_TEXT_LENGTH) {
       return res.status(400).json({ error: `\`text\` must be 1-${MAX_TEXT_LENGTH} characters.` });
     }
-    if ((await lark.getCustomer(key))?.optedOut) {
-      return res.status(409).json({ error: "This customer sent STOP. They must send START before you can message them." });
-    }
-
     try {
-      const result = await enqueue(key, async () => {
-        const sent = await lark.sendText(key, text);
-        await lark.touchCustomer(key);
-        // Keep it in the conversation so the agent has context when the customer replies.
-        const state = getSession(key);
-        sessions.set(key, {
-          ...state,
-          history: [...state.history, { role: "assistant", content: text.slice(0, 1000) }].slice(-10),
-          updatedAt: Date.now(),
-        });
-        return sent;
-      });
+      const result = await deliver(key, text);
       res.json({ sent: true, to: key, id: result.id });
     } catch (error) {
+      if (error instanceof OptedOutError) {
+        return res.status(409).json({ error: "This customer sent STOP. They must send START before you can message them." });
+      }
       const status = error instanceof LarkError && error.status && error.status < 500 ? 400 : 502;
       res.status(status).json({ error: error.message });
     }
@@ -146,5 +159,5 @@ export function createLarkController({ lark, agentConfig }) {
     res.json(await lark.listCustomers());
   }
 
-  return { onMessageEvent, sendToCustomer, listCustomers };
+  return { onMessageEvent, sendToCustomer, listCustomers, deliver };
 }

@@ -1,12 +1,15 @@
 import "dotenv/config";
 // Better Stack. `npm start` already loads this first (node --import), so this import reuses that copy.
-import { larkLogger, reportError, setupErrorMonitoring } from "./instrument.js";
+import { larkLogger, onShutdown, reportError, setupErrorMonitoring } from "./instrument.js";
 import express from "express";
 import * as Lark from "@larksuiteoapi/node-sdk";
 import { pathToFileURL } from "node:url";
 import { createLarkService } from "./integrations/lark/lark.service.js";
 import { createLarkController } from "./integrations/lark/lark.controller.js";
 import { createLarkRoutes } from "./integrations/lark/lark.routes.js";
+import { createRedis } from "./redis.js";
+import { createSessionStore } from "./session-store.js";
+import { createReminders } from "./reminders.js";
 
 // Lark (international, open.larksuite.com) and Feishu (China, open.feishu.cn) are separate platforms.
 const DOMAINS = { lark: "https://open.larksuite.com", feishu: "https://open.feishu.cn" };
@@ -69,7 +72,20 @@ const dataDir = process.env.DATA_DIR
   ? pathToFileURL(process.env.DATA_DIR.replace(/[\\/]*$/, "/"))
   : new URL("../data/", import.meta.url);
 const lark = createLarkService({ ...config, dataDir });
-const controller = createLarkController({ lark, agentConfig });
+// Redis (optional): conversation history cache + scheduled reminders.
+const redisUrl = process.env.REDIS_URL?.trim();
+const sessions = createSessionStore(redisUrl ? createRedis(redisUrl, "cache") : null);
+const controller = createLarkController({ lark, agentConfig, sessions });
+let reminders = null;
+if (redisUrl) {
+  reminders = createReminders({ redisUrl, deliver: controller.deliver });
+  onShutdown(() => reminders.close());
+}
+console.log(
+  redisUrl
+    ? "[redis] conversation history: Redis, scheduled reminders: on"
+    : "[redis] REDIS_URL not set — conversation history kept in memory, scheduled reminders off",
+);
 
 let botName;
 try {
@@ -95,7 +111,7 @@ function start() {
       res.set({
         "Access-Control-Allow-Origin": origin,
         "Access-Control-Allow-Headers": "Authorization, Content-Type",
-        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
         "Access-Control-Max-Age": "600",
         Vary: "Origin",
       });
@@ -114,7 +130,7 @@ function start() {
     }),
   );
   app.get("/health", (req, res) => res.json({ ok: true }));
-  app.use("/lark", createLarkRoutes({ controller, agentApiKey: config.agentApiKey }));
+  app.use("/lark", createLarkRoutes({ controller, agentApiKey: config.agentApiKey, reminders }));
   app.use((req, res) => res.status(404).json({ error: "Not found." }));
   setupErrorMonitoring(app); // reports route errors to Better Stack Errors, then passes them on
   app.use((error, req, res, next) => {
