@@ -30,7 +30,7 @@ function explain(code, message) {
     case 230001:
     case 99992361:
     case 99992364:
-      return `${message} — Unknown or invalid user ID / email. For email:… the person must be a member of your Lark workspace (not an external contact) and inside the app's availability (developer console → Version Management & Release → Availability, then publish). The app also needs the contact:user.id:readonly scope to find users by email.`;
+      return `${message} — Unknown or invalid user ID / email. For email:… the person must be a member of your Lark workspace (not an external contact) and inside the app's availability (developer console → Version Management & Release → Availability, then publish).`;
     default:
       return message;
   }
