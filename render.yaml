@@ -1,9 +1,9 @@
 # Render Blueprint: Render → New → Blueprint → pick this repo.
+# Free plans only:
 #   lark-redis      Redis (Key Value): Celery broker, customers, conversation cache, reminders
-#   lark-backend    API (FastAPI) + Lark long connection          python -m app.main
-#   lark-celery     Celery worker with Beat built in (reminders)  celery ... worker -B
-#   lark-flower     Flower: web page to watch Celery tasks        (free plan)
-#   lark-dashboard  static dashboard (optional; you can host it on Cloudflare Pages instead)
+#   lark-backend    API (FastAPI) + Lark long connection + Celery worker/Beat   python -m app.main
+#   lark-flower     Flower: web page to watch Celery tasks
+# The dashboard is hosted separately (Vercel / Cloudflare Pages).
 # Values marked "sync: false" are asked for once when you create the Blueprint.
 
 envVarGroups:
@@ -56,53 +56,34 @@ services:
   # ---- Redis ----
   - type: keyvalue
     name: lark-redis
-    # Starter or higher: the free plan keeps no data on disk (reminders and customers would be lost).
-    plan: starter
+    # Free: no data on disk, so customers/reminders are lost if Redis restarts (Starter keeps them).
+    plan: free
     region: singapore # all services must be in the same region
     maxmemoryPolicy: noeviction # Celery tasks must never be evicted
     ipAllowList: [] # only reachable from your Render services
 
-  # ---- API + Lark long connection ----
+  # ---- API + Lark long connection + Celery worker/Beat (child processes) ----
   - type: web
     name: lark-backend
     runtime: python
     rootDir: backend
-    # Starter or higher: free instances sleep after 15 min, which drops the Lark connection.
-    plan: starter
+    # Free: sleeps after 15 min without HTTP traffic, which also stops the Lark connection
+    # and Celery until the next request wakes it (Starter stays awake).
+    plan: free
     region: singapore
     numInstances: 1 # only ONE copy may hold the Lark long connection
     buildCommand: pip install -r requirements.txt
     startCommand: python -m app.main
     healthCheckPath: /health
-    # Only needed once: imports customers.json from the old Node version into Redis.
-    disk:
-      name: lark-data
-      mountPath: /data
-      sizeGB: 1
     envVars:
       - fromGroup: lark-shared
-      - key: DATA_DIR
-        value: /data
+      - key: CELERY_IN_WEB
+        value: "on"
       - key: REDIS_URL
         fromService: { type: keyvalue, name: lark-redis, property: connectionString }
       # Dashboard URL, e.g. https://lark-dashboard.pages.dev (no trailing slash)
       - key: CORS_ORIGINS
         sync: false
-
-  # ---- Celery worker + Beat ----
-  - type: worker
-    name: lark-celery
-    runtime: python
-    rootDir: backend
-    plan: starter
-    region: singapore
-    numInstances: 1 # Beat runs inside this worker: keep ONE instance
-    buildCommand: pip install -r requirements.txt
-    startCommand: celery -A app.celery_app worker -B --loglevel=INFO --concurrency=2 --schedule=/tmp/celerybeat-schedule
-    envVars:
-      - fromGroup: lark-shared
-      - key: REDIS_URL
-        fromService: { type: keyvalue, name: lark-redis, property: connectionString }
 
   # ---- Flower (watch Celery) ----
   - type: web
@@ -118,32 +99,3 @@ services:
         generateValue: true
       - key: REDIS_URL
         fromService: { type: keyvalue, name: lark-redis, property: connectionString }
-
-  # ---- Dashboard (static) ----
-  - type: web
-    name: lark-dashboard
-    runtime: static
-    rootDir: frontend
-    buildCommand: npm run build
-    staticPublishPath: dist
-    headers:
-      - path: /*
-        name: X-Content-Type-Options
-        value: nosniff
-      - path: /*
-        name: X-Frame-Options
-        value: DENY
-      - path: /*
-        name: Referrer-Policy
-        value: no-referrer
-      - path: /config.js
-        name: Cache-Control
-        value: no-cache
-    envVars:
-      # Backend URL, e.g. https://lark-backend.onrender.com
-      - key: API_URL
-        sync: false
-      - key: BETTERSTACK_SOURCE_TOKEN
-        sync: false
-      - key: BETTERSTACK_HOST
-        sync: false

@@ -13,6 +13,7 @@ Endpoints (same as the Node version, so the dashboard and send.py keep working):
 import hmac
 import multiprocessing
 import os
+import subprocess
 import sys
 from contextlib import asynccontextmanager
 
@@ -28,7 +29,7 @@ from .lark_api import MAX_TEXT_LENGTH, LarkError, parse_customer_key, verify_cre
 from .logs import app_log, flush, report_error, setup_logging
 from .messaging import OptedOutError, deliver
 
-state = {"bot": None, "listener": None}
+state = {"bot": None, "listener": None, "celery": None}
 
 
 def _start_listener() -> None:
@@ -39,12 +40,31 @@ def _start_listener() -> None:
     state["listener"] = proc
 
 
+def _start_celery() -> None:
+    """Celery worker + Beat as a child process, so one (free) web service runs everything.
+    --pool=solo keeps it to one process to stay within 512 MB."""
+    celery_cmd = [sys.executable, "-m", "celery", "-A", "app.celery_app"]
+    schedule = "/tmp/celerybeat-schedule" if os.name != "nt" else os.path.join(os.getenv("TEMP", "."), "celerybeat-schedule")
+    if os.name != "nt":
+        cmds = [celery_cmd + ["worker", "-B", "--pool=solo", "--loglevel=INFO", f"--schedule={schedule}"]]
+    else:  # Windows doesn't allow -B: run Beat as its own process
+        cmds = [celery_cmd + ["worker", "--pool=solo", "--loglevel=INFO"], celery_cmd + ["beat", "--loglevel=INFO", f"--schedule={schedule}"]]
+    state["celery"] = [subprocess.Popen(cmd) for cmd in cmds]
+    app_log.info("[celery] worker + Beat started inside the web service (pid %s)", ", ".join(str(p.pid) for p in state["celery"]))
+
+
+def _celery_running() -> bool:
+    return bool(state["celery"]) and all(p.poll() is None for p in state["celery"])
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     setup_logging("app", "server", "redis", "celery")
     os.environ["LARK_PROCESS"] = "api"
     if store.check_connection("api"):
         store.import_old_customers()
+    if os.getenv("CELERY_IN_WEB", "on") != "off":
+        _start_celery()
     try:
         state["bot"] = await run_in_threadpool(verify_credentials)
         app_log.info("Lark platform: %s — bot \"%s\"", settings.lark_domain_name, state["bot"])
@@ -56,6 +76,9 @@ async def lifespan(_app: FastAPI):
     yield
     if state["listener"] and state["listener"].is_alive():
         state["listener"].terminate()
+    for proc in state["celery"] or []:
+        if proc.poll() is None:
+            proc.terminate()
     flush()
 
 
@@ -97,6 +120,7 @@ def root():
         "bot": state["bot"],
         "platform": settings.lark_domain_name,
         "listener": "running" if proc and proc.is_alive() else "stopped",
+        "celery": "running" if _celery_running() else "stopped",
         "note": "Running. Customers chat with the bot inside Lark. Use send.py or POST /lark/send to message them.",
     }
 
@@ -106,6 +130,8 @@ def health():
     proc = state["listener"]
     if proc is not None and not proc.is_alive():  # makes Render restart the service
         return JSONResponse({"ok": False, "error": "Lark listener stopped"}, status_code=503)
+    if state["celery"] is not None and not _celery_running():
+        return JSONResponse({"ok": False, "error": "Celery stopped"}, status_code=503)
     return {"ok": True}
 
 

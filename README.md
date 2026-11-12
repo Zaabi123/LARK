@@ -105,11 +105,9 @@ Dashboard locally: `cd frontend`, `npm run dev`, open http://localhost:5310, and
 
 | Service | What | Plan |
 |---|---|---|
-| `lark-redis` | Redis (Key Value), `noeviction` | Starter |
-| `lark-backend` | API + Lark bot (`python -m app.main`) | Starter |
-| `lark-celery` | Celery worker with Beat (`celery -A app.celery_app worker -B`) | Starter |
+| `lark-redis` | Redis (Key Value), `noeviction` | Free |
+| `lark-backend` | API + Lark bot + Celery worker/Beat (child processes) | Free |
 | `lark-flower` | Flower, to watch Celery tasks (user `admin`, password = `FLOWER_PASSWORD`, generated) | Free |
-| `lark-dashboard` | static dashboard (skip if you use Cloudflare Pages) | Free |
 
 3. `AGENT_API_KEY` is generated in the `lark-shared` environment group. Paste it into the dashboard.
 
