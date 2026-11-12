@@ -71,14 +71,19 @@
       <h2>Connect to the backend</h2>
       <div class="row">
         <div>
-          <label for="apiUrl">Backend URL (Railway)</label>
-          <input id="apiUrl" placeholder="https://your-app.up.railway.app" autocomplete="url" />
+          <label for="apiUrl">Backend URL</label>
+          <input id="apiUrl" placeholder="https://lark-backend.onrender.com" autocomplete="url" />
         </div>
         <div>
           <label for="apiKey">Agent key (AGENT_API_KEY)</label>
           <input id="apiKey" type="password" placeholder="Kept in this browser tab only" autocomplete="current-password" />
         </div>
+        <div>
+          <label for="who">Your name or email (optional)</label>
+          <input id="who" placeholder="For Better Stack Users" autocomplete="email" />
+        </div>
         <button id="connectBtn">Connect</button>
+        <button class="ghost" id="disconnectBtn" disabled>Disconnect</button>
       </div>
       <div id="connectMsg"></div>
     </section>
@@ -156,6 +161,26 @@
   const defaultApi = String(window.APP_CONFIG?.apiUrl || "").replace(/\/+$/, "");
   $("apiUrl").value = store.get("larkApiUrl") || defaultApi;
   $("apiKey").value = store.get("larkApiKey");
+  try { $("who").value = localStorage.getItem("larkWho") || ""; } catch {}
+
+  // Better Stack Users & Groups. Only people who typed a name/email are identified (no anonymous
+  // visitors); the group is the Lark bot they're managing. The agent key is never sent.
+  function identify(info) {
+    const who = $("who").value.trim();
+    try { localStorage.setItem("larkWho", who); } catch {}
+    if (!window.betterstack || !who) return;
+    const bot = info.bot || "Lark bot";
+    window.betterstack("user", {
+      id: who.toLowerCase(),
+      ...(who.includes("@") ? { email: who } : {}),
+      username: who,
+      group_id: `${info.platform || "lark"}:${bot}`,
+      group_name: bot,
+    });
+  }
+  function forget() {
+    window.betterstack?.("user", null);
+  }
 
   const base = () => $("apiUrl").value.trim().replace(/\/+$/, "");
   function note(el, text, ok) {
@@ -176,7 +201,7 @@
         headers: { Authorization: `Bearer ${$("apiKey").value.trim()}`, ...(opts.body ? { "Content-Type": "application/json" } : {}) },
       });
     } catch {
-      throw new Error(`Can't reach ${base()}. Check the URL, and that CORS_ORIGINS on Railway includes ${location.origin}.`);
+      throw new Error(`Can't reach ${base()}. Check the URL, and that CORS_ORIGINS on the backend includes ${location.origin}.`);
     }
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
@@ -209,15 +234,17 @@
     $("connectBtn").disabled = true;
     try {
       if (!base()) throw new Error("Enter the backend URL.");
-      const info = await fetch(base() + "/").then((r) => r.json()).catch(() => { throw new Error(`Can't reach ${base()}. Check the URL, and that CORS_ORIGINS on Railway includes ${location.origin}.`); });
+      const info = await fetch(base() + "/").then((r) => r.json()).catch(() => { throw new Error(`Can't reach ${base()}. Check the URL, and that CORS_ORIGINS on the backend includes ${location.origin}.`); });
       $("bot").textContent = info.bot ? `bot "${info.bot}" on ${info.platform}` : "";
       await loadCustomers();
       store.set("larkApiUrl", base());
       store.set("larkApiKey", $("apiKey").value.trim());
       setStatus("Connected", "ok");
+      identify(info);
       console.info(`Connected to backend ${base()} (${$("count").textContent.replace(/[()]/g, "")} customers)`);
       $("refreshBtn").disabled = false;
       $("sendBtn").disabled = false;
+      $("disconnectBtn").disabled = false;
     } catch (e) {
       setStatus("Not connected", "bad");
       note("connectMsg", e.message, false);
@@ -228,6 +255,18 @@
   }
 
   $("connectBtn").onclick = connect;
+  $("disconnectBtn").onclick = () => {
+    forget();
+    $("apiKey").value = "";
+    store.set("larkApiKey", "");
+    $("customers").innerHTML = '<tr><td colspan="4" class="muted">Connect to load customers.</td></tr>';
+    $("count").textContent = "";
+    $("bot").textContent = "";
+    setStatus("Not connected");
+    note("connectMsg", "");
+    ["refreshBtn", "sendBtn", "disconnectBtn"].forEach((id) => ($(id).disabled = true));
+    console.info("Disconnected from backend");
+  };
   $("refreshBtn").onclick = () => loadCustomers().catch((e) => note("connectMsg", e.message, false));
   $("sendBtn").onclick = async () => {
     note("sendMsg", "");
