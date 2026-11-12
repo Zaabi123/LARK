@@ -1,0 +1,88 @@
+# Render Blueprint: Render → New → Blueprint → pick this repo.
+# Creates the backend (web service) and the dashboard (static site).
+# Values marked "sync: false" are asked for once when you create the Blueprint.
+services:
+  # ---- Backend: Node server with the Lark long connection ----
+  - type: web
+    name: lark-backend
+    runtime: node
+    rootDir: backend
+    # Starter or higher: free instances sleep after 15 min without HTTP traffic,
+    # which drops the Lark long connection so the bot stops answering.
+    # Paid plans also allow the persistent disk below.
+    plan: starter
+    region: singapore
+    numInstances: 1 # only ONE copy may hold the Lark long connection
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
+    disk:
+      name: lark-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATA_DIR
+        value: /data
+      - key: LARK_APP_ID
+        sync: false
+      - key: LARK_APP_SECRET
+        sync: false
+      - key: LARK_DOMAIN
+        value: lark
+      - key: AGENT_API_KEY
+        generateValue: true
+      - key: MODEL_API_KEY
+        sync: false
+      - key: MODEL_API_URL
+        value: https://api.groq.com/openai/v1/chat/completions
+      - key: MODEL_NAME
+        value: openai/gpt-oss-120b
+      - key: PRODUCT_NAME
+        value: leather products
+      - key: STANDARD_UNIT_PRICE
+        value: "250"
+      - key: BULK_MINIMUM_QUANTITY
+        value: "500"
+      - key: MINIMUM_UNIT_PRICE
+        value: "225"
+      # Dashboard URL, e.g. https://lark-dashboard.onrender.com (no trailing slash)
+      - key: CORS_ORIGINS
+        sync: false
+      # Better Stack (optional; leave empty to turn off)
+      - key: BETTERSTACK_SOURCE_TOKEN
+        sync: false
+      - key: BETTERSTACK_INGEST_HOST
+        sync: false
+      - key: BETTERSTACK_ERRORS_DSN
+        sync: false
+
+  # ---- Dashboard: static site ----
+  - type: web
+    name: lark-dashboard
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm run build
+    staticPublishPath: dist
+    headers:
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: Referrer-Policy
+        value: no-referrer
+      - path: /config.js
+        name: Cache-Control
+        value: no-cache
+    envVars:
+      # Backend URL, e.g. https://lark-backend.onrender.com
+      - key: API_URL
+        sync: false
+      - key: BETTERSTACK_SOURCE_TOKEN
+        sync: false
+      - key: BETTERSTACK_HOST
+        sync: false

@@ -70,7 +70,7 @@ if (dsn) {
     sentry = await import("@sentry/node");
     sentry.init({
       dsn,
-      environment: process.env.RAILWAY_ENVIRONMENT_NAME || "local",
+      environment: process.env.RAILWAY_ENVIRONMENT_NAME || (process.env.RENDER ? "render" : "local"),
       tracesSampleRate: 0,
       enableOpenTelemetrySetup: false, // tracing is handled by the OpenTelemetry SDK above
     });

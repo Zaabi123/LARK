@@ -13,8 +13,8 @@ const DOMAINS = { lark: "https://open.larksuite.com", feishu: "https://open.feis
 const domainName = (process.env.LARK_DOMAIN || "lark").toLowerCase();
 
 const config = {
-  // Railway (and similar hosts) route traffic to 0.0.0.0; locally stay on 127.0.0.1.
-  host: process.env.HOST || (process.env.RAILWAY_ENVIRONMENT ? "0.0.0.0" : "127.0.0.1"),
+  // Render/Railway route traffic to 0.0.0.0; locally stay on 127.0.0.1.
+  host: process.env.HOST || ((process.env.RENDER || process.env.RAILWAY_ENVIRONMENT) ? "0.0.0.0" : "127.0.0.1"),
   port: Number(process.env.PORT || 3007),
   appId: process.env.LARK_APP_ID,
   appSecret: process.env.LARK_APP_SECRET,

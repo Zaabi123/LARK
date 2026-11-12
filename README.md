@@ -69,6 +69,29 @@ replies.
 Dashboard locally: `cd frontend`, then `npm run dev`, and open http://localhost:5310.
 Add `CORS_ORIGINS=http://localhost:5310` to `backend/.env`.
 
+## Deploy on Render (backend + dashboard)
+
+`render.yaml` describes both services. Run only **one** copy of the backend
+(stop the local server and any Railway deploy first).
+
+1. Push this repo to GitHub.
+2. Render → **New → Blueprint** → pick this repo → Render reads `render.yaml`.
+3. Fill in the values it asks for: `LARK_APP_ID`, `LARK_APP_SECRET`,
+   `MODEL_API_KEY`. Leave `CORS_ORIGINS`, `API_URL` and the Better Stack values
+   empty for now. **Apply.**
+4. When both are live, copy the URLs and set:
+   - `lark-backend` → Environment → `CORS_ORIGINS` = `https://lark-dashboard.onrender.com`
+     (your real dashboard URL, no trailing slash)
+   - `lark-dashboard` → Environment → `API_URL` = `https://lark-backend.onrender.com`,
+     then **Manual Deploy** so the dashboard is rebuilt with it.
+5. `AGENT_API_KEY` is generated for you: `lark-backend` → Environment → reveal
+   it, then paste it into the dashboard and click **Connect**.
+
+The backend uses the **Starter** plan: free instances sleep after 15 minutes
+without web traffic, which closes the Lark long connection, and they can't have
+a disk. The 1 GB disk at `/data` keeps `customers.json` (incl. STOP opt-outs)
+across deploys. The dashboard is a free static site.
+
 ## Deploy: backend on Railway, dashboard on Vercel
 
 Run only **one** copy of the backend. Lark sends each message to one open long
