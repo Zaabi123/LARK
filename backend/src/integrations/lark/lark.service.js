@@ -1,7 +1,7 @@
 // Talks to the Lark Open Platform API (via the official SDK) and stores the customer directory.
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import * as lark from "@larksuiteoapi/node-sdk";
-import { recordMessageSent, recordSendFailure } from "../../instrument.js";
+import { larkLogger, recordMessageSent, recordSendFailure } from "../../instrument.js";
 
 export const MAX_TEXT_LENGTH = 4000;
 
@@ -27,9 +27,10 @@ function explain(code, message) {
       return `${message} — The bot is not in this chat. Add the bot to the group first.`;
     case 230013:
       return `${message} — This user can't see the bot. In the developer console → Version Management, make the app available to them (or to all members) and publish.`;
+    case 230001:
     case 99992361:
     case 99992364:
-      return `${message} — Unknown or invalid user ID / email.`;
+      return `${message} — Unknown or invalid user ID / email. For email:… the person must be a member of your Lark workspace (not an external contact) and inside the app's availability (developer console → Version Management & Release → Availability, then publish). The app also needs the contact:user.id:readonly scope to find users by email.`;
     default:
       return message;
   }
@@ -61,6 +62,7 @@ export function createLarkService({ appId, appSecret, domain, dataDir }) {
     domain,
     appType: lark.AppType.SelfBuild,
     loggerLevel: lark.LoggerLevel.warn,
+    logger: larkLogger,
   });
 
   /** Unwrap an SDK call: throw a readable LarkError on any failure. */
@@ -113,7 +115,7 @@ export function createLarkService({ appId, appSecret, domain, dataDir }) {
       console.log(`[send] ${kind} delivered to ${target}`);
       return data;
     } catch (error) {
-      recordSendFailure(kind, error);
+      recordSendFailure(kind, error, target);
       console.error(`[send] ${kind} FAILED to ${target}: ${error.message}`);
       throw error;
     }

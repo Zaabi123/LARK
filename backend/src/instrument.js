@@ -168,11 +168,38 @@ export function recordMessageSent(kind) {
   logEvent("send_ok", { kind });
 }
 
-export function recordSendFailure(kind, error) {
+export function recordSendFailure(kind, error, target) {
   const code = String(error?.code ?? error?.status ?? "error");
   sendFailures.add(1, { kind, code });
   logEvent("send_failed", { kind, code, reason: String(error?.message ?? "").slice(0, 120) });
+  reportError(error, { kind, target, lark_code: code });
 }
+
+/**
+ * Sends a caught (handled) error to Better Stack Error tracking. Uncaught crashes are reported
+ * automatically; errors caught in try/catch only show up there if passed to this.
+ */
+export function reportError(error, extra = {}) {
+  sentry?.captureException(error, { extra });
+}
+
+/**
+ * Logger for the Lark SDK (Client and WSClient). Its default logger prints arrays/objects, which show
+ * up as empty "[info]:" / "[error]:" lines; this turns every message into one readable line.
+ */
+const flatten = (m) =>
+  Array.isArray(m) ? m.map(flatten).join(" ")
+  : m instanceof Error ? m.message
+  : typeof m === "object" && m !== null ? (() => { try { return JSON.stringify(m); } catch { return String(m); } })()
+  : String(m);
+const larkLine = (...msg) => `[lark] ${msg.map(flatten).join(" ")}`;
+export const larkLogger = {
+  error: (...msg) => console.error(larkLine(...msg)),
+  warn: (...msg) => console.warn(larkLine(...msg)),
+  info: (...msg) => console.log(larkLine(...msg)),
+  debug: (...msg) => console.debug(larkLine(...msg)),
+  trace: (...msg) => console.debug(larkLine(...msg)),
+};
 
 /** Call after a successful model call with its OpenAI-style `usage`. */
 export function recordAiReply(model, usage, seconds) {
@@ -189,10 +216,11 @@ export function recordAiReply(model, usage, seconds) {
   logEvent("ai_reply", { model, input_tokens: input, output_tokens: output, cost_usd: cost, duration_s: seconds });
 }
 
-export function recordAiError(model, seconds) {
+export function recordAiError(model, seconds, error) {
   aiLatency.record(seconds, { model, outcome: "error" });
   aiErrors.add(1, { model });
   logEvent("ai_failed", { model, duration_s: seconds });
+  if (error) reportError(error, { model, duration_s: seconds });
 }
 
 /** Runs `fn` inside a new trace span, so its logs and outgoing calls are grouped together. */

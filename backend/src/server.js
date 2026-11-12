@@ -1,6 +1,6 @@
 import "dotenv/config";
 // Better Stack. `npm start` already loads this first (node --import), so this import reuses that copy.
-import { setupErrorMonitoring } from "./instrument.js";
+import { larkLogger, reportError, setupErrorMonitoring } from "./instrument.js";
 import express from "express";
 import * as Lark from "@larksuiteoapi/node-sdk";
 import { pathToFileURL } from "node:url";
@@ -77,6 +77,7 @@ try {
 } catch (error) {
   // Don't call process.exit() here: with fetch sockets still open it can crash Node on Windows.
   console.error(`Could not connect to Lark: ${error.message}`);
+  reportError(error, { stage: "startup" });
   process.exitCode = 1;
 }
 if (botName) start();
@@ -138,6 +139,7 @@ function start() {
     appSecret: config.appSecret,
     domain: config.domain,
     loggerLevel: Lark.LoggerLevel.info, // shows "ws client ready" once connected
+    logger: larkLogger,
   });
   wsClient.start({ eventDispatcher });
   console.log("Opening Lark long connection — customers can message your bot once it says it's connected.");

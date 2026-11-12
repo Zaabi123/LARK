@@ -195,7 +195,7 @@ async function callModel(history, message, plan, config) {
     recordAiReply(config.modelName, usage, seconds());
     return reply;
   } catch (error) {
-    recordAiError(config.modelName, seconds());
+    recordAiError(config.modelName, seconds(), error);
     throw error;
   }
 }
