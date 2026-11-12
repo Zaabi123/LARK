@@ -118,6 +118,10 @@ sent STOP, and a failed send is retried twice (after 1 and 2 minutes).
 sent as events `reminder_scheduled`, `reminder_sent`, `reminder_failed`, `reminder_cancelled`.
 A reminder that finally fails, and Redis errors, also go to Error tracking.
 
+**Queue dashboard (like Celery's Flower):** open `https://<your-backend>/queues`, any username,
+password = `AGENT_API_KEY`. It shows delayed, repeating, completed and failed reminder jobs with
+their data and errors, and lets you retry or delete them.
+
 Without `REDIS_URL` the app still runs: history is kept in memory and reminders are off.
 
 ## Deploy: backend on Railway, dashboard on Vercel

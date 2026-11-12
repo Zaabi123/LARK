@@ -11,6 +11,8 @@
     "send": "node send.js"
   },
   "dependencies": {
+    "@bull-board/api": "9.13.0",
+    "@bull-board/express": "9.13.0",
     "@larksuiteoapi/node-sdk": "1.76.0",
     "@logtail/node": "^0.6.1",
     "@opentelemetry/api": "^1.10.0",

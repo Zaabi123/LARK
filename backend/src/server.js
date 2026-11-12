@@ -10,6 +10,7 @@ import { createLarkRoutes } from "./integrations/lark/lark.routes.js";
 import { createRedis } from "./redis.js";
 import { createSessionStore } from "./session-store.js";
 import { createReminders } from "./reminders.js";
+import { mountQueueBoard } from "./queue-board.js";
 
 // Lark (international, open.larksuite.com) and Feishu (China, open.feishu.cn) are separate platforms.
 const DOMAINS = { lark: "https://open.larksuite.com", feishu: "https://open.feishu.cn" };
@@ -130,6 +131,7 @@ function start() {
     }),
   );
   app.get("/health", (req, res) => res.json({ ok: true }));
+  if (reminders) mountQueueBoard(app, { queue: reminders.queue, password: config.agentApiKey });
   app.use("/lark", createLarkRoutes({ controller, agentApiKey: config.agentApiKey, reminders }));
   app.use((req, res) => res.status(404).json({ error: "Not found." }));
   setupErrorMonitoring(app); // reports route errors to Better Stack Errors, then passes them on

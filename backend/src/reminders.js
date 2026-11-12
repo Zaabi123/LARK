@@ -147,5 +147,5 @@ export function createReminders({ redisUrl, deliver }) {
     await queue.close();
   }
 
-  return { schedule, list, cancel, close };
+  return { schedule, list, cancel, close, queue };
 }
